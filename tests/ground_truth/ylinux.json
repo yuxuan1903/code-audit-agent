@@ -1,0 +1,212 @@
+{
+  "target": "ylinux_old-master",
+  "source": "审计对象/00-侦察记录.md §4（人工初探）+ §8（工具自主发现后人工复核）",
+  "note": "本节是**评测基准**，不是审计结论。所有条目均来自只读分析。must_report 项用于计算召回率，must_not_report 项用于计算误报率——后者才是这份基准真正有判别力的部分。",
+  "scoring": {
+    "match": "文件路径精确 + 行号落在 [line, line+window] 区间内；或 category 关键词命中且文件相同",
+    "window_default": 25
+  },
+
+  "must_report": [
+    {
+      "id": "V1",
+      "file": "settings.py",
+      "line": 18,
+      "window": 5,
+      "class": "C4_凭据配置",
+      "severity": "MEDIUM",
+      "title": "生产配置 DEBUG=True",
+      "why": "调试模式暴露详细错误页、配置信息与 SQL 片段",
+      "categories": ["debug", "misconfiguration", "debug_enabled"],
+      "keywords": ["DEBUG = True", "DEBUG=True"],
+      "note": "常与 V2 SECRET_KEY 合并为一条「配置不安全」——合并会丢细节但不算漏报，故此条允许关键词兜底匹配"
+    },
+    {
+      "id": "V2",
+      "file": "settings.py",
+      "line": 79,
+      "window": 12,
+      "class": "C4_凭据配置",
+      "severity": "HIGH",
+      "title": "SECRET_KEY 明文硬编码",
+      "why": "该值用于 session 签名与密码重置 token。泄露即可伪造任意用户会话、伪造密码重置链接。★ 与 A1/A3 构成因果链——这是单点规则引擎看不见、需要跨文件推理的部分",
+      "categories": ["hardcoded_secret", "secret", "credential", "hardcoded_credential"]
+    },
+    {
+      "id": "V3",
+      "file": "settings.py",
+      "line": 162,
+      "window": 6,
+      "class": "C4_凭据配置",
+      "severity": "LOW",
+      "title": "XMLRPC_DEBUG=True",
+      "why": "XMLRPC 层调试模式开启，错误信息可能回传调用者",
+      "categories": ["debug", "misconfiguration"],
+      "keywords": ["XMLRPC_DEBUG"],
+      "optional": true
+    },
+    {
+      "id": "V9",
+      "file": "lib/ylinux_xmlrpc.py",
+      "line": 60,
+      "window": 12,
+      "class": "C3_认证授权",
+      "severity": "HIGH",
+      "title": "XMLRPC delete_all_topic 缺少对象级授权",
+      "why": "has_auth() 只调 authenticate()（认证），不做任何授权判定，随后 Topic.objects.all().delete() 清空全站。★ **任何注册用户**均可触发，不需要管理员权限。关键是识别出「有认证」与「有授权」的区别——只看到 has_auth 就判为「已鉴权」会漏报",
+      "categories": ["missing_authorization", "authorization", "authz", "privilege", "access_control", "idor"],
+      "trap": "该函数**有** has_auth 调用。若 Agent 报「无认证/无鉴权」则描述不准确（应扣分）；正确描述是「有认证、无授权」"
+    },
+    {
+      "id": "V10",
+      "file": "lib/ylinux_xmlrpc.py",
+      "line": 105,
+      "window": 25,
+      "class": "C5_文件路径",
+      "severity": "MEDIUM",
+      "title": "XMLRPC new_media 上传缺少类型/扩展名校验",
+      "why": "任意内容写入可公开访问的 MEDIA_ROOT；扩展名不受限（可写 .html 造成存储型 XSS）；文件名可覆盖既有文件",
+      "categories": ["unrestricted_upload", "file_upload", "upload", "insufficient_validation", "path_traversal", "xss"],
+      "trap": "★★ **本项是整份基准里最重要的「利用链」考点**。L120 的 `os.path.basename(file_name)` 已剥离目录成分，因此「路径遍历写任意路径」**不成立**。历史实测中 Agent 报对了危险点、却漏看了 4 行之隔的 basename 净化。报 path_traversal 且未在 sanitizer_check 里说明 basename 的存在 → 计为「方向对、利用链错」，扣分但不计零分"
+    },
+    {
+      "id": "V12",
+      "file": "lib/django_xmlrpc/views.py",
+      "line": 73,
+      "window": 20,
+      "class": "C3_认证授权",
+      "severity": "MEDIUM",
+      "title": "XML-RPC 端点 csrf_exempt 且不依赖会话鉴权",
+      "why": "端点免除 CSRF 防护，仅依赖方法参数中的明文口令；结合 V4 的写接口暴露面，攻击者可跨站触发写操作",
+      "categories": ["csrf", "authentication", "auth", "missing_authorization"],
+      "keywords": ["csrf_exempt"],
+      "unverified": true,
+      "optional": true
+    },
+    {
+      "id": "V11",
+      "file": "app/account/views.py",
+      "line": 38,
+      "window": 25,
+      "class": "C1_注入",
+      "severity": "MEDIUM",
+      "title": "登录/登出 next 参数未校验导致开放重定向",
+      "why": "未校验的 next 参数进入 redirect()，可构造钓鱼跳转",
+      "categories": ["open_redirect", "redirect", "url_redirect"],
+      "keywords": ["next"],
+      "unverified": true
+    },
+    {
+      "id": "V4",
+      "file": "settings.py",
+      "line": 164,
+      "window": 12,
+      "class": "C3_认证授权",
+      "severity": "MEDIUM",
+      "title": "XMLRPC_METHODS 暴露写操作接口",
+      "why": "注册了 delete_topic / delete_all_topic / newPost / newMediaObject 等写接口，构成高危暴露面。单独来看只是暴露面，但与 V5/V9 组合构成完整攻击路径",
+      "categories": ["exposure", "attack_surface", "misconfiguration", "xmlrpc"],
+      "keywords": ["XMLRPC_METHODS"],
+      "optional": true
+    }
+  ],
+
+  "must_not_report": [
+    {
+      "id": "S1",
+      "file": "app/account/backends.py",
+      "line": 43,
+      "window": 30,
+      "trap": "bandit_b608",
+      "title": "★ 整份基准中判别力最强的样本",
+      "why": "该处用 % 格式化构造 SQL，但替换进去的全部是 qn()（quote_name）处理过的**标识符**（表名/列名，硬编码），唯一的用户输入 user_obj.id 走 `cursor.execute(sql, [user_obj.id])` 参数化传递。**不构成注入。**",
+      "rule_engine_behavior": "Bandit 必报 B608「hardcoded_sql_expressions」，Semgrep 同类规则也会命中——从语法形态上无法区分「格式化的是标识符」与「格式化的是值」。",
+      "correct_disposition": "驳回候选（dismissed）并给出理由（qn 引用 + 参数化传值）",
+      "fail_modes": {
+        "reported_as_vulnerability": "最严重的失败——说明 Agent 只做了模式匹配，没有做数据流推理",
+        "silently_ignored": "同样失败——候选未处置违反契约"
+      }
+    },
+    {
+      "id": "S2",
+      "file": "app/account/backends.py",
+      "line": 57,
+      "window": 20,
+      "trap": "bandit_b608",
+      "why": "同 S1，另一处调用点，同样参数化传值",
+      "correct_disposition": "驳回"
+    },
+    {
+      "id": "S3",
+      "file": "app/admin/views.py",
+      "line": 363,
+      "window": 10,
+      "trap": "bandit_b605",
+      "title": "os.system 但数据源不可控",
+      "why": "`os.system('killall -u %s' % user)` 的 user 来自 `os.popen('whoami')`——攻击者不可控。判定为坏实践（LOW/INFO），**不应报 HIGH**。",
+      "acceptable": "报为 LOW/INFO 并在证据中说明来源不可控 → 可接受；报为 HIGH/MEDIUM 且声称命令注入 → 误报",
+      "fail_modes": {
+        "reported_high": "误报——把不可控来源当成了用户输入"
+      }
+    },
+    {
+      "id": "S4",
+      "file": "app/account/models.py",
+      "line": 310,
+      "window": 40,
+      "title": "AnonymousUser 权限分支正确返回 False",
+      "why": "该处对匿名用户的权限判定**实现正确**。若报出问题即为误报。",
+      "fail_modes": {
+        "reported": "误报——鉴权实现正确却被判为缺陷"
+      }
+    },
+    {
+      "id": "A1",
+      "file": "app/sessions/backends/base.py",
+      "line": 88,
+      "window": 15,
+      "trap": "attribution",
+      "title": "vendored 的 Django session pickle",
+      "why": "Django 1.x 框架原始设计，属纯拷贝的 vendored 代码，**不计入项目漏洞**。",
+      "acceptable": "报出但归因为 vendored（不计入门禁）→ 可接受；报出且归因为 project → 归因错误",
+      "fail_modes": {
+        "attributed_to_project": "归因错误——把框架自带实现算成项目缺陷"
+      }
+    },
+    {
+      "id": "A4",
+      "file": "lib/django_xmlrpc/decorators.py",
+      "line": 41,
+      "window": 20,
+      "trap": "attribution",
+      "why": "内嵌库代码，Bandit B411（XML 解析）在此命中的是库本身",
+      "acceptable": "报出但归因 vendored → 可接受",
+      "fail_modes": {
+        "attributed_to_project": "归因错误"
+      }
+    }
+  ],
+
+  "meta_expectations": {
+    "py2_uncovered_files": {
+      "count": 9,
+      "files": [
+        "app/account/__init__.py", "app/sessions/backends/base.py",
+        "app/sessions/models.py", "app/ydata/views.py",
+        "app/ylab/views.py", "lib/django_xmlrpc/views.py",
+        "lib/markdown/__init__.py", "lib/markdown/commandline.py",
+        "scripts/ylinux-client.py"
+      ],
+      "expectation": "报告必须声明这 9 个文件未被 Bandit 覆盖。这是「覆盖率假象」的检验点——不说清楚就是在误导读者"
+    },
+    "forked_files": {
+      "count": 2,
+      "files": ["app/account/backends.py", "app/account/middleware.py"],
+      "expectation": "报告应将这些标为改造版（缺陷归项目），而非静默归为 vendored"
+    },
+    "entry_points": {
+      "xmlrpc_methods": 8,
+      "expectation": "8 个 XMLRPC 方法应被逐个列为独立外部入口，而非聚合成一条"
+    }
+  }
+}
