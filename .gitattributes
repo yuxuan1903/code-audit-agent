@@ -1,0 +1,11 @@
+# 保持仓库里每个文件的字节原样，不做行尾转换。
+#
+# 为什么需要这个文件：Windows 版 Git 默认 core.autocrlf=true，**检出时会把 LF 换成 CRLF**。
+# 而本仓库的核心声明之一是「engine/ 的 45 个文件与产出 results/* 那次运行时的代码逐字节
+# 相同」，证据是 code_digest 哈希（README 与 docs/04 都引了 e844a6d55780dc7e）。
+# 那个哈希是对文件**字节**算的（engine/util.py 的 build_fingerprint 用 read_bytes()）。
+# 一旦克隆时行尾被改写，哈希就对不上——读者会以为代码被改过，而实际上没有。
+#
+# `* -text` 的含义是「所有文件都不做行尾规范化」：提交与检出都保持原字节。
+# 代价是 Git 不会再做换行转换（本仓库的源本来就是 LF，不需要转换）。
+* -text
